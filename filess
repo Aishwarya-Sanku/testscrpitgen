@@ -1,0 +1,125 @@
+ 
+const express = require('express');
+const XLSX = require('xlsx');
+const path = require('path');
+const fs = require('fs');
+const cors = require('cors');
+ 
+const app = express();
+const port = 3000;
+ 
+app.use(express.json());
+app.use(cors());
+ 
+// Define variations for each required column
+const requiredColumnVariations = {
+  'Test Case_id': ['Test Case_id', 'tc_id', 'TCID', 'TESTCASE_ID', 'ID', 'testcase_id','id','Id'],
+  'Test Case Type': ['Test Case Type', 'Case Type', 'Type','case type','case_type','caseType'],
+  'Test Case Description': ['Test Case Description', 'Description','desc','Desc','DESC'],
+  'Steps to Execute': ['Steps to Execute', 'Steps', 'Execute Steps']
+};
+ 
+function normalizeColumnName(name) {
+  return name ? name.trim().toLowerCase() : '';
+}
+ 
+function getNormalizedColumnNames(rawColumnNames) {
+  return rawColumnNames
+    .filter(name => name && !name.startsWith('__EMPTY'))
+    .map(name => normalizeColumnName(name));
+}
+ 
+function checkRequiredColumns(columnNames, requiredColumnVariations) {
+  const missingColumns = [];
+  for (const [required, variations] of Object.entries(requiredColumnVariations)) {
+    const normalizedVariations = variations.map(normalizeColumnName);
+    if (!normalizedVariations.some(variation => columnNames.includes(variation))) {
+      missingColumns.push(required);
+    }
+  }
+  return missingColumns;
+}
+ 
+app.post('/process', (req, res) => {
+  const { filePath } = req.body;
+ 
+  if (!filePath) {
+    return res.status(400).send('No file path provided.');
+  }
+ 
+  const fullPath = path.resolve(filePath);
+  console.log('Received file path:', filePath);
+  console.log('Resolved file path:', fullPath);
+ 
+  if (!fs.existsSync(fullPath)) {
+    console.error('File not found:', fullPath);
+    return res.status(404).send('File not found.');
+  }
+ 
+  try {
+    const workbook = XLSX.readFile(fullPath);
+    const sheetNames = workbook.SheetNames;
+    const sheet = workbook.Sheets[sheetNames[0]];
+ 
+    // Convert the sheet data to JSON format with header row
+    const sheetData = XLSX.utils.sheet_to_json(sheet, { header: 1 });
+ 
+    if (sheetData.length < 2) {
+      return res.status(400).send('Not enough rows in the Excel file.');
+    }
+ 
+    // Extract column names from the second row (index 1)
+    const rawColumnNames = sheetData[1] || [];
+   
+    // Check if rawColumnNames is an array
+    if (!Array.isArray(rawColumnNames)) {
+      return res.status(500).send('Unexpected format for column names.');
+    }
+ 
+    // Normalize and clean up column names
+    const columnNames = getNormalizedColumnNames(rawColumnNames);
+ 
+    // Check if all required columns are present
+    const missingColumns = checkRequiredColumns(columnNames, requiredColumnVariations);
+    if (missingColumns.length > 0) {
+      return res.status(400).json({
+        message: 'Error',
+        details: {
+          message: 'Missing required columns.',
+          missingColumns
+        }
+      });
+    }
+ 
+    // Extract data starting from the third row (index 2)
+    const dataRows = sheetData.slice(2);
+    const cleanedData = dataRows.map(row => {
+      let cleanedRow = {};
+      columnNames.forEach((colName, index) => {
+        cleanedRow[colName] = row[index] || null;
+      });
+      return cleanedRow;
+    });
+ 
+    // Prepare the response
+    const response = {
+      message: 'Good to go',
+      fileName: path.basename(fullPath),
+      columnNames: rawColumnNames
+    };
+ 
+    // Include the data field only if cleanedData is not empty
+    if (cleanedData.length > 0) {
+      response.data = cleanedData;
+    }
+ 
+    res.json(response);
+  } catch (error) {
+    console.error('Error processing file:', error);
+    res.status(500).send('Error processing file.');
+  }
+});
+ 
+app.listen(port, () => {
+  console.log(`Server is running at http://localhost:${port}`);
+});
